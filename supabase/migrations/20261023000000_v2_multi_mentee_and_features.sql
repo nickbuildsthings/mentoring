@@ -39,6 +39,35 @@ create table public.partnerships (
 create index on public.partnerships (mentor_id);
 create index on public.partnerships (mentee_id);
 
+create or replace function public.stamp_row() returns trigger
+language plpgsql set search_path = ''
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.created_at  := coalesce(new.created_at, now());
+    new.created_by  := coalesce(auth.uid(), new.created_by);
+    new.updated_at  := now();
+    new.updated_by  := coalesce(auth.uid(), new.updated_by, new.created_by);
+    new.version     := 1;
+    new.archived_at := null;
+    new.archived_by := null;
+  else
+    new.id         := old.id;
+    new.created_at := old.created_at;
+    new.created_by := old.created_by;
+    new.updated_at := now();
+    new.updated_by := coalesce(auth.uid(), new.updated_by);
+    new.version    := old.version + 1;
+    if new.archived_at is distinct from old.archived_at then
+      new.archived_at := case when new.archived_at is null then null else now() end;
+      new.archived_by := case when new.archived_at is null then null else coalesce(auth.uid(), new.archived_by) end;
+    else
+      new.archived_by := old.archived_by;
+    end if;
+  end if;
+  return new;
+end $$;
+
 create trigger partnerships_stamp before insert or update on public.partnerships
   for each row execute function public.stamp_row();
 

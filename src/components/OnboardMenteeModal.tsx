@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { usePartnership } from '../auth/PartnershipContext';
-import { useClaimPartnershipInvite, useCreateMenteePartnership } from '../data/hooks';
+import { useClaimPartnershipInvite, useCreateMenteePartnership, useSeedDemoMentee } from '../data/hooks';
 import { Modal, TextArea, TextInput } from './ui';
 
 export function OnboardMenteeModal({ onClose }: { onClose: () => void }) {
   const { invites, selectPartnership } = usePartnership();
   const createPartnership = useCreateMenteePartnership();
   const claimInvite = useClaimPartnershipInvite();
+  const seedDemo = useSeedDemoMentee();
 
   const [tab, setTab] = useState<'create' | 'claim'>('create');
   const [menteeName, setMenteeName] = useState('');
@@ -57,6 +58,22 @@ export function OnboardMenteeModal({ onClose }: { onClose: () => void }) {
       onClose();
     } catch {
       setClaimError('That invitation code was not recognised or has already been claimed.');
+    }
+  };
+
+  const handleSeedDemo = async () => {
+    setCreateError(null);
+    try {
+      const pid = await seedDemo.mutateAsync();
+      selectPartnership(pid);
+      onClose();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (/create_mentee_partnership|schema cache|function/i.test(msg)) {
+        setCreateError('Database migration required: please run supabase/migrations/20261023000000_v2_multi_mentee_and_features.sql in your Supabase SQL Editor first.');
+      } else {
+        setCreateError('Could not seed the demo mentee workspace. Please try again.');
+      }
     }
   };
 
@@ -147,8 +164,16 @@ export function OnboardMenteeModal({ onClose }: { onClose: () => void }) {
             />
             {createError && <p className="notice notice-bad" role="alert">{createError}</p>}
             <div className="row">
-              <button type="submit" className="btn btn-primary" disabled={createPartnership.isPending || !menteeName.trim()}>
+              <button type="submit" className="btn btn-primary" disabled={createPartnership.isPending || seedDemo.isPending || !menteeName.trim()}>
                 {createPartnership.isPending ? 'Creating workspace…' : 'Create mentee workspace & invite code'}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={createPartnership.isPending || seedDemo.isPending}
+                onClick={() => void handleSeedDemo()}
+              >
+                {seedDemo.isPending ? 'Seeding demo mentee…' : 'Load Demo Mentee (Alex Rivera)'}
               </button>
             </div>
           </form>

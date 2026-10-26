@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { Session as AuthSession } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
+import { initialAuthUrl, supabase } from '../lib/supabase';
 import type { Profile } from '../lib/types';
 
 type AuthState =
@@ -14,8 +14,11 @@ type AuthState =
 interface AuthApi {
   state: AuthState;
   passwordRecovery: boolean;
+  authNotice: string | null;
+  clearAuthNotice: () => void;
   clearPasswordRecovery: () => void;
   signIn: (email: string, password: string) => Promise<string | null>;
+  requestPasswordReset: (email: string) => Promise<string | null>;
   signOut: () => Promise<void>;
   changePassword: (newPassword: string) => Promise<string | null>;
   retryProfile: () => Promise<void>;
@@ -26,15 +29,25 @@ const Ctx = createContext<AuthApi | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const qc = useQueryClient();
   const [state, setState] = useState<AuthState>({ status: 'loading' });
-  const [passwordRecovery, setPasswordRecovery] = useState(false);
+  const [passwordRecovery, setPasswordRecovery] = useState(initialAuthUrl.isRecovery);
+  const [authNotice, setAuthNotice] = useState<string | null>(initialAuthUrl.errorDescription);
   const sessionRef = useRef<AuthSession | null>(null);
+  const tokenHashHandledRef = useRef(false);
 
   const resolve = useCallback(
     async (session: AuthSession | null, isCancelled?: () => boolean) => {
       sessionRef.current = session;
       if (!session) {
         qc.clear();
-        if (!isCancelled?.()) setState({ status: 'signed-out' });
+        if (!isCancelled?.()) {
+          if (initialAuthUrl.isRecovery) {
+            setPasswordRecovery(false);
+            setAuthNotice(
+              (prev) => prev ?? 'That password reset link is invalid or has expired. Please request a new one.',
+            );
+          }
+          setState({ status: 'signed-out' });
+        }
         return;
       }
       const { data, error } = await supabase
@@ -69,13 +82,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     const isCancelled = () => cancelled;
+
+    const verifyTokenHashIfPresent = async (): Promise<AuthSession | null> => {
+      if (!initialAuthUrl.tokenHash || tokenHashHandledRef.current) return null;
+      tokenHashHandledRef.current = true;
+      if (typeof window !== 'undefined') {
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete('token_hash');
+        cleanUrl.searchParams.delete('token');
+        cleanUrl.searchParams.delete('type');
+        window.history.replaceState(window.history.state, '', cleanUrl.toString());
+      }
+      const { data, error } = await supabase.auth.verifyOtp({
+        token_hash: initialAuthUrl.tokenHash,
+        type: 'recovery',
+      });
+      if (error || !data.session) {
+        setPasswordRecovery(false);
+        setAuthNotice(
+          error?.message || 'That password reset link is invalid or has expired. Please request a new one.',
+        );
+        return null;
+      }
+      setPasswordRecovery(true);
+      setAuthNotice(null);
+      return data.session;
+    };
+
     // Never call Supabase from inside the callback itself (it can deadlock); defer.
     const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY') {
         setPasswordRecovery(true);
+        setAuthNotice(null);
       }
       if (event === 'TOKEN_REFRESHED') return;
-      setTimeout(() => void resolve(session, isCancelled), 0);
+      setTimeout(() => {
+        void (async () => {
+          if (!session && initialAuthUrl.tokenHash && !tokenHashHandledRef.current) {
+            const verifiedSession = await verifyTokenHashIfPresent();
+            if (verifiedSession) {
+              await resolve(verifiedSession, isCancelled);
+              return;
+            }
+          }
+          await resolve(session, isCancelled);
+        })();
+      }, 0);
     });
     return () => {
       cancelled = true;
@@ -87,14 +139,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       state,
       passwordRecovery,
+      authNotice,
+      clearAuthNotice: () => setAuthNotice(null),
       clearPasswordRecovery: () => setPasswordRecovery(false),
       async signIn(email, password) {
+        setAuthNotice(null);
         const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
         if (!error) return null;
         // Deliberately generic: never reveal whether an address has an account.
         return error.status === 429
           ? 'Too many attempts. Please wait a few minutes and try again.'
           : 'Those details were not recognised. Check your email address and password and try again.';
+      },
+      async requestPasswordReset(email) {
+        const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/` : undefined;
+        const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo });
+        if (error && error.status === 429) {
+          return 'Too many reset requests. Please wait a few minutes and try again.';
+        }
+        return null;
       },
       async signOut() {
         setPasswordRecovery(false);
@@ -115,10 +178,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await resolve(data.session ?? sessionRef.current);
       },
     }),
-    [state, passwordRecovery, resolve],
+    [state, passwordRecovery, authNotice, resolve],
   );
   return <Ctx.Provider value={api}>{children}</Ctx.Provider>;
 }
+
 
 export function useAuth(): AuthApi {
   const v = useContext(Ctx);

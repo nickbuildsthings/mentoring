@@ -9,6 +9,7 @@ import {
   toggleDiscussNext,
   updateRow,
 } from './api';
+import { seedDemoMenteeWorkspace } from './seedDemoMentee';
 import type {
   Action,
   Objective,
@@ -108,6 +109,16 @@ export function useClaimPartnershipInvite() {
       await qc.invalidateQueries({ queryKey: ['profiles'] });
       await qc.invalidateQueries({ queryKey: ['partnerships'] });
       await qc.invalidateQueries({ queryKey: ['partnership_invites'] });
+    },
+  });
+}
+
+export function useSeedDemoMentee() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => seedDemoMenteeWorkspace(),
+    onSuccess: async () => {
+      await qc.invalidateQueries();
     },
   });
 }
