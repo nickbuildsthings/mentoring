@@ -1,3 +1,5 @@
+export const MAX_LINKS = 10;
+
 /** Returns a normalised http(s) URL, or null if the input is not a safe external link. */
 export function safeUrl(input: string): string | null {
   const value = input.trim();
@@ -10,8 +12,8 @@ export function safeUrl(input: string): string | null {
   }
 }
 
-/** Parses one-link-per-line text. Returns valid links and the lines that were rejected. */
-export function parseLinks(text: string): { links: string[]; invalid: string[] } {
+/** Parses one-link-per-line text. Returns valid links, rejected lines, and whether the 10-link cap was exceeded (REC-007). */
+export function parseLinks(text: string): { links: string[]; invalid: string[]; tooMany: boolean } {
   const links: string[] = [];
   const invalid: string[] = [];
   for (const line of text.split('\n').map((l) => l.trim()).filter(Boolean)) {
@@ -19,5 +21,5 @@ export function parseLinks(text: string): { links: string[]; invalid: string[] }
     if (url) links.push(url);
     else invalid.push(line);
   }
-  return { links, invalid };
+  return { links, invalid, tooMany: links.length > MAX_LINKS };
 }

@@ -27,11 +27,50 @@ export interface Editor<D, R extends Stamped> {
   submit: () => Promise<void>;
   loadLatest: () => void;
   overwrite: () => Promise<void>;
+  /** Adopt an externally updated record (e.g. archive/restore toggle) without triggering a false self-conflict (REC-009). */
+  adoptRecord: (updated: R) => void;
   guard: ReactNode;
+}
+
+function BlockerDialog({ onStay, onLeave }: { onStay: () => void; onLeave: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const d = ref.current;
+    if (d && !d.open) d.showModal();
+    return () => {
+      if (d?.open) d.close();
+    };
+  }, []);
+  return (
+    <dialog
+      ref={ref}
+      className="dialog modal"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="leave-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        onStay();
+      }}
+    >
+      <h2 id="leave-title">Leave without saving?</h2>
+      <p>You have unsaved changes on this page.</p>
+      <div className="row">
+        <button type="button" className="btn btn-primary" autoFocus onClick={onStay}>
+          Stay and keep editing
+        </button>
+        <button type="button" className="btn btn-ghost" onClick={onLeave}>
+          Leave and discard
+        </button>
+      </div>
+    </dialog>
+  );
 }
 
 export function useEditor<D extends object, R extends Stamped>({ record, toDraft, save, onSaved }: Options<D, R>): Editor<D, R> {
   const baseRef = useRef<R | undefined>(record);
+  const savingRef = useRef(false);
+  const lastSavedVersionRef = useRef<number | null>(null);
   const baselineRef = useRef<string>(JSON.stringify(toDraft(record)));
   const [draft, setDraft] = useState<D>(() => toDraft(record));
   const draftRef = useRef(draft);
@@ -46,6 +85,7 @@ export function useEditor<D extends object, R extends Stamped>({ record, toDraft
 
   const adopt = useCallback((r: R | undefined) => {
     baseRef.current = r;
+    lastSavedVersionRef.current = r?.version ?? null;
     const next = toDraft(r);
     baselineRef.current = JSON.stringify(next);
     draftRef.current = next;
@@ -54,12 +94,34 @@ export function useEditor<D extends object, R extends Stamped>({ record, toDraft
     bump((n) => n + 1);
   }, [toDraft]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pick up changes to the stored record, but never overwrite what the user is typing.
+  const adoptRecord = useCallback((updated: R) => {
+    baseRef.current = updated;
+    lastSavedVersionRef.current = updated.version;
+    setConflict(null);
+    if (!isDirty()) {
+      const next = toDraft(updated);
+      baselineRef.current = JSON.stringify(next);
+      draftRef.current = next;
+      setDraft(next);
+    }
+    bump((n) => n + 1);
+  }, [toDraft]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Pick up changes to the stored record, but never overwrite what the user is typing
+  // and never trigger a false conflict against the user's own in-flight save (REC-003).
   useEffect(() => {
     if (!record) return;
     const base = baseRef.current;
     if (!base || base.id !== record.id) return adopt(record);
-    if (record.version === base.version) return;
+    if (record.version === base.version || record.version === lastSavedVersionRef.current) {
+      baseRef.current = record;
+      return;
+    }
+    if (savingRef.current) {
+      baseRef.current = record;
+      lastSavedVersionRef.current = record.version;
+      return;
+    }
     if (!isDirty()) adopt(record);
     else setConflict(record);
   }, [record]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -74,12 +136,17 @@ export function useEditor<D extends object, R extends Stamped>({ record, toDraft
   const blocker = useBlocker(() => isDirty());
 
   const run = useCallback(async (base: R | undefined) => {
+    savingRef.current = true;
+    if (base) {
+      lastSavedVersionRef.current = base.version + 1;
+    }
     setState('saving');
     setError(null);
     const sent = draftRef.current;
     try {
       const saved = await save(sent, base);
       baseRef.current = saved;
+      lastSavedVersionRef.current = saved.version;
       // Edits made while the save was in flight stay dirty.
       baselineRef.current = JSON.stringify(sent);
       setConflict(null);
@@ -87,6 +154,7 @@ export function useEditor<D extends object, R extends Stamped>({ record, toDraft
       bump((n) => n + 1);
       onSaved?.(saved);
     } catch (e) {
+      lastSavedVersionRef.current = base?.version ?? null;
       if (e instanceof ConflictError) {
         setConflict(e.latest as R);
         setState('error');
@@ -95,20 +163,13 @@ export function useEditor<D extends object, R extends Stamped>({ record, toDraft
         setState('error');
         setError(friendlyError(e));
       }
+    } finally {
+      savingRef.current = false;
     }
   }, [save, onSaved]);
 
   const guard = blocker.state === 'blocked' ? (
-    <div className="modal-backdrop" role="presentation">
-      <div className="modal" role="alertdialog" aria-modal="true" aria-labelledby="leave-title">
-        <h2 id="leave-title">Leave without saving?</h2>
-        <p>You have unsaved changes on this page.</p>
-        <div className="row">
-          <button type="button" className="btn" autoFocus onClick={() => blocker.reset()}>Stay and keep editing</button>
-          <button type="button" className="btn btn-ghost" onClick={() => blocker.proceed()}>Leave and discard</button>
-        </div>
-      </div>
-    </div>
+    <BlockerDialog onStay={() => blocker.reset()} onLeave={() => blocker.proceed()} />
   ) : null;
 
   return {
@@ -119,5 +180,6 @@ export function useEditor<D extends object, R extends Stamped>({ record, toDraft
     submit: () => run(baseRef.current),
     loadLatest: () => { if (conflict) { adopt(conflict); setState('idle'); setError(null); } },
     overwrite: async () => { if (conflict) { baseRef.current = conflict; await run(conflict); } },
+    adoptRecord,
   };
 }

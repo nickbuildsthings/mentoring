@@ -6,7 +6,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const env = (k) => { const v = process.env[k]; if (!v) { console.error(`Missing ${k}`); process.exit(2); } return v; };
 const url = env('SUPABASE_URL'), key = env('SUPABASE_ANON_KEY');
-const tables = ['profiles', 'objectives', 'sessions', 'session_objectives', 'session_preparation', 'actions', 'progress_updates'];
+const tables = ['profiles', 'partnerships', 'objectives', 'sessions', 'session_objectives', 'session_preparation', 'actions', 'progress_updates', 'progress_update_comments'];
 let failures = 0;
 const check = (ok, msg) => { console.log(`${ok ? 'ok  ' : 'FAIL'} - ${msg}`); if (!ok) failures++; };
 const client = () => createClient(url, key, { auth: { persistSession: false } });
@@ -43,7 +43,7 @@ check(!!del.error || (del.data ?? []).length === 0, 'unapproved account cannot d
 // 3. Approved member can read, and still cannot hard-delete
 const member = await signedIn('MEMBER_EMAIL', 'MEMBER_PASSWORD');
 const prof = await member.from('profiles').select('id');
-check(!prof.error && prof.data.length === 2, 'approved member sees both profiles');
+check(!prof.error && prof.data.length >= 2, 'approved member sees partnership profiles');
 const mdel = await member.from('objectives').delete().neq('title', '').select();
 check(!!mdel.error || (mdel.data ?? []).length === 0, 'approved member cannot hard-delete objectives');
 

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useMe } from '../auth/AuthProvider';
+import { usePartnership } from '../auth/PartnershipContext';
 import { ActionList, NewActionButton } from '../components/ActionDialog';
 import { EmptyState, LoadError, PageHeader, Spinner } from '../components/ui';
 import { useActions, useObjectives, useProfiles } from '../data/hooks';
@@ -13,6 +14,7 @@ export function sortActions(list: Action[]): Action[] {
 
 export function ActionsPage() {
   const me = useMe();
+  const { activePartnership } = usePartnership();
   const actions = useActions();
   const objectives = useObjectives().data ?? [];
   const profiles = useProfiles().data ?? [];
@@ -33,19 +35,32 @@ export function ActionsPage() {
     .filter((a) => status === 'all' || (status === 'open' ? a.status !== 'completed' && a.status !== 'cancelled' : a.status === status))
     .filter((a) => !objective || a.objective_id === objective)
     .filter((a) => !overdueOnly || isOverdue(a))
-    .filter((a) => !needle || a.title.toLowerCase().includes(needle)));
-  const other = profiles.find((p) => p.id !== me.id);
+    .filter((a) =>
+      !needle ||
+      [a.title, a.description ?? '', a.blocked_note ?? '', a.completion_note ?? ''].some((s) =>
+        s.toLowerCase().includes(needle),
+      ),
+    ));
+
+  const otherId = activePartnership
+    ? (me.role === 'mentor' ? activePartnership.mentee_id : activePartnership.mentor_id)
+    : undefined;
+  const other = (otherId ? profiles.find((p) => p.id === otherId) : undefined) ?? profiles.find((p) => p.id !== me.id);
+  const otherRole: MemberRole = me.role === 'mentor' ? 'mentee' : 'mentor';
+  const otherLabel = other
+    ? `${other.display_name} (${labels.role[other.role]})`
+    : `${activePartnership?.mentee_name ?? labels.role[otherRole]} (${labels.role[otherRole]})`;
 
   return (
     <>
       <PageHeader title="Actions"><NewActionButton /></PageHeader>
       <div className="filters" role="search">
-        <label>Search titles<input type="search" value={q} onChange={(e) => setQ(e.target.value)} /></label>
+        <label>Search actions<input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, details, notes…" /></label>
         <label>Owner
           <select value={owner} onChange={(e) => setOwner(e.target.value as 'any' | MemberRole)}>
             <option value="any">Both</option>
             <option value={me.role}>Me ({me.display_name})</option>
-            {other && <option value={other.role}>{other.display_name} ({labels.role[other.role]})</option>}
+            <option value={other?.role ?? otherRole}>{otherLabel}</option>
           </select>
         </label>
         <label>Status

@@ -1,5 +1,6 @@
 import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth/AuthProvider';
+import { PartnershipProvider } from './auth/PartnershipContext';
 import { Layout } from './components/Layout';
 import { Spinner } from './components/ui';
 import { isConfigured } from './lib/supabase';
@@ -14,12 +15,30 @@ import { SessionDetail } from './pages/SessionDetail';
 import { SessionsPage } from './pages/SessionsPage';
 
 function Protected() {
-  const { state } = useAuth();
+  const { state, retryProfile, signOut } = useAuth();
   const location = useLocation();
   if (state.status === 'loading') return <main className="centre"><Spinner label="Checking your sign-in…" /></main>;
   if (state.status === 'signed-out') return <Navigate to="/signin" replace state={{ from: location.pathname }} />;
+  if (state.status === 'error') {
+    return (
+      <main className="centre">
+        <div className="panel" role="alert">
+          <h1>Connection problem</h1>
+          <p>{state.message}</p>
+          <div className="row">
+            <button type="button" className="btn btn-primary" onClick={() => void retryProfile()}>Try again</button>
+            <button type="button" className="btn btn-ghost" onClick={() => void signOut()}>Sign out</button>
+          </div>
+        </div>
+      </main>
+    );
+  }
   if (state.status === 'unauthorised') return <NoAccess />;
-  return <Layout><Outlet /></Layout>;
+  return (
+    <PartnershipProvider>
+      <Layout><Outlet /></Layout>
+    </PartnershipProvider>
+  );
 }
 
 function Root() {

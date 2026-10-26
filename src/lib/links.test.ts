@@ -18,5 +18,12 @@ describe('parseLinks', () => {
     const r = parseLinks('https://a.test\n\njavascript:x\n https://b.test ');
     expect(r.links).toEqual(['https://a.test/', 'https://b.test/']);
     expect(r.invalid).toEqual(['javascript:x']);
+    expect(r.tooMany).toBe(false);
+  });
+  it('flags when more than 10 links are provided (REC-007)', () => {
+    const eleven = Array.from({ length: 11 }, (_, i) => `https://example.test/${i}`).join('\n');
+    const r = parseLinks(eleven);
+    expect(r.links).toHaveLength(11);
+    expect(r.tooMany).toBe(true);
   });
 });

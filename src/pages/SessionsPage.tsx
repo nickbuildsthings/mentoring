@@ -20,14 +20,19 @@ export function SessionsPage() {
   const list = sessions.data
     .filter((s) => (archived ? !!s.archived_at : !s.archived_at))
     .filter((s) => status === 'all' || s.status === status)
-    .filter((s) => !needle || (s.title ?? '').toLowerCase().includes(needle))
+    .filter((s) =>
+      !needle ||
+      [s.title ?? '', s.discussion_notes ?? '', s.outcomes ?? '', s.location ?? ''].some((field) =>
+        field.toLowerCase().includes(needle),
+      ),
+    )
     .sort((a, b) => b.scheduled_at.localeCompare(a.scheduled_at));
 
   return (
     <>
       <PageHeader title="Sessions"><Link to="/sessions/new" className="btn btn-primary">New session</Link></PageHeader>
       <div className="filters" role="search">
-        <label>Search titles<input type="search" value={q} onChange={(e) => setQ(e.target.value)} /></label>
+        <label>Search sessions<input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Title, notes, outcomes, location…" /></label>
         <label>Status
           <select value={status} onChange={(e) => setStatus(e.target.value as 'all' | SessionStatus)}>
             <option value="all">All</option>

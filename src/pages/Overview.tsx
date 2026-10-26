@@ -1,38 +1,65 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMe } from '../auth/AuthProvider';
+import { usePartnership } from '../auth/PartnershipContext';
 import { ActionList, NewActionButton } from '../components/ActionDialog';
+import { CharterPanel } from '../components/CharterPanel';
+import { OnboardMenteeModal } from '../components/OnboardMenteeModal';
 import { NewUpdateButton } from '../components/UpdateDialog';
 import { Badge, EmptyState, LoadError, PageHeader, Spinner, useNames } from '../components/ui';
-import { useActions, useObjectives, usePreparations, useProfiles, useSessions, useUpdates } from '../data/hooks';
-import { formatDay, formatInstant, isOverdue, labels } from '../lib/format';
+import { useActions, useObjectives, usePreparations, useProfiles, useSessionObjectives, useSessions, useUpdates } from '../data/hooks';
+import { formatDay, formatInstant, isObjectiveStalled, isOverdue, labels, todayLondon } from '../lib/format';
 import { sortActions } from './ActionsPage';
+import { MentorOverview } from './MentorOverview';
 
 type OwnerFilter = 'me' | 'other' | 'both';
 
 export function Overview() {
   const me = useMe();
+  const {
+    partnerships,
+    invites,
+    activePartnership,
+    viewMode,
+    setViewMode,
+    myRole,
+    partnerName,
+    isMentorOfAny,
+  } = usePartnership();
   const name = useNames();
   const objectives = useObjectives();
   const sessions = useSessions();
   const actions = useActions();
   const updates = useUpdates();
   const preps = usePreparations().data ?? [];
+  const sessionObjectives = useSessionObjectives().data ?? [];
   const profiles = useProfiles().data ?? [];
   const [owner, setOwner] = useState<OwnerFilter>('me');
+  const [showOnboard, setShowOnboard] = useState(false);
 
   const feed = useMemo(() => {
     type Item = { key: string; at: string; text: string; href?: string };
     const items: Item[] = [];
     for (const u of updates.data ?? []) {
       if (u.archived_at) continue;
-      items.push({ key: `u${u.id}`, at: u.created_at, text: `${name(u.created_by)} added ${u.type === 'achievement' ? 'an' : 'a'} ${labels.update[u.type].toLowerCase()}: ${u.content.slice(0, 120)}${u.content.length > 120 ? '…' : ''}`, href: u.objective_id ? `/objectives/${u.objective_id}` : '/progress' });
+      items.push({
+        key: `u${u.id}`,
+        at: u.created_at,
+        text: `${name(u.created_by)} added ${u.type === 'achievement' ? 'an' : 'a'} ${labels.update[u.type].toLowerCase()}: ${u.content.slice(0, 120)}${u.content.length > 120 ? '…' : ''}`,
+        href: u.objective_id ? `/objectives/${u.objective_id}` : '/progress',
+      });
     }
     for (const a of actions.data ?? []) {
-      if (a.completed_at && !a.archived_at) items.push({ key: `a${a.id}`, at: a.completed_at, text: `${name(a.updated_by)} completed “${a.title}”`, href: '/actions' });
+      if (a.completed_at && !a.archived_at) {
+        items.push({ key: `a${a.id}`, at: a.completed_at, text: `${name(a.updated_by)} completed “${a.title}”`, href: '/actions' });
+      }
     }
     return items.sort((x, y) => y.at.localeCompare(x.at)).slice(0, 10);
   }, [updates.data, actions.data, name]);
+
+  if (viewMode === 'mentor-overview' && isMentorOfAny) {
+    return <MentorOverview />;
+  }
 
   if (objectives.isPending || sessions.isPending || actions.isPending || updates.isPending) return <Spinner />;
   const failed = [objectives, sessions, actions, updates].find((q) => q.isError);
@@ -43,19 +70,81 @@ export function Overview() {
   const acts = actions.data ?? [];
   const upds = updates.data ?? [];
   const now = new Date().toISOString();
+  const today = todayLondon();
+
   const next = sess
     .filter((s) => s.status === 'planned' && !s.archived_at && s.scheduled_at >= now)
     .sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at))[0];
   const active = objs.filter((o) => o.status === 'active' && !o.archived_at);
   const proposed = objs.filter((o) => o.status === 'proposed' && !o.archived_at);
-  const outstanding = sortActions(acts.filter((a) => !a.archived_at && a.status !== 'completed' && a.status !== 'cancelled'))
-    .filter((a) => owner === 'both' || (owner === 'me' ? a.owner_role === me.role : a.owner_role !== me.role));
-  const otherName = profiles.find((p) => p.id !== me.id)?.display_name ?? 'Them';
+
+  const allOpenActions = sortActions(
+    acts.filter((a) => !a.archived_at && a.status !== 'completed' && a.status !== 'cancelled'),
+  );
+  // Blocked actions from EITHER partner are always surfaced so support requests are never missed (REC-016)
+  const blockedActions = allOpenActions.filter((a) => a.status === 'blocked');
+  const outstanding = allOpenActions.filter(
+    (a) => owner === 'both' || (owner === 'me' ? a.owner_role === myRole : a.owner_role !== myRole),
+  );
+
+  const otherName = partnerName || profiles.find((p) => p.id !== me.id)?.display_name || 'Partner';
   const overdueCount = outstanding.filter((a) => isOverdue(a)).length;
+  const flaggedForNextSession = upds.filter((u) => !u.archived_at && u.discuss_next);
+
+  const pendingInvite = activePartnership
+    ? invites.find((i) => i.partnership_id === activePartnership.id && !i.claimed_at)
+    : undefined;
+
+  // Onboarding progress check (REC-019)
+  const hasCharter = Boolean(
+    activePartnership &&
+      (activePartnership.purpose || activePartnership.working_agreement || activePartnership.meeting_cadence),
+  );
+  const hasObjectives = objs.some((o) => !o.archived_at);
+  const hasSessions = sess.some((s) => !s.archived_at);
+  const showOnboardingGuide = !hasCharter || !hasObjectives || !hasSessions;
+
+  // Participant list for preparation status scoped to the active partnership
+  const partnershipParticipants = activePartnership
+    ? [
+        { id: activePartnership.mentor_id, name: activePartnership.mentor_id === me.id ? 'You' : otherName },
+        ...(activePartnership.mentee_id
+          ? [{ id: activePartnership.mentee_id, name: activePartnership.mentee_id === me.id ? 'You' : otherName }]
+          : []),
+      ]
+    : profiles.map((p) => ({ id: p.id, name: p.id === me.id ? 'You' : p.display_name }));
 
   return (
     <>
-      <PageHeader title={`Hello, ${me.display_name}`} />
+      <PageHeader title={`Hello, ${me.display_name}`}>
+        {partnerships.length > 1 && isMentorOfAny && (
+          <button type="button" className="btn" onClick={() => setViewMode('mentor-overview')}>
+            All mentees ({partnerships.length})
+          </button>
+        )}
+        {isMentorOfAny && (
+          <button type="button" className="btn btn-ghost" onClick={() => setShowOnboard(true)}>
+            + Onboard mentee
+          </button>
+        )}
+      </PageHeader>
+
+      {activePartnership && (
+        <p className="muted small">
+          Active partnership: <strong>{activePartnership.mentee_name}</strong>
+          {activePartnership.title ? ` — ${activePartnership.title}` : ''} ({labels.role[myRole]})
+        </p>
+      )}
+
+      {pendingInvite && (
+        <div className="notice notice-info" role="region" aria-label="Pending mentee invitation">
+          <p>
+            <strong>Invite {activePartnership?.mentee_name} to join this workspace:</strong> Share invitation code{' '}
+            <code className="invite-code">{pendingInvite.code}</code> with them so they can link their account on first sign-in.
+          </p>
+        </div>
+      )}
+
       <div className="row quick" aria-label="Quick actions">
         <Link to="/objectives/new" className="btn">New objective</Link>
         <Link to="/sessions/new" className="btn">New session</Link>
@@ -63,29 +152,94 @@ export function Overview() {
         <NewUpdateButton />
       </div>
 
+      {showOnboardingGuide && (
+        <section aria-labelledby="h-getting-started" className="panel onboarding-guide">
+          <h2 id="h-getting-started">Getting started together</h2>
+          <p className="muted small">
+            Three steps to set up a strong mentoring partnership:
+          </p>
+          <ol className="plain onboarding-steps">
+            <li>
+              {hasCharter ? '✓' : '1.'} <strong>Agree your Mentoring Charter</strong> — capture your overarching purpose, meeting cadence, and working agreement below.
+            </li>
+            <li>
+              {hasObjectives ? '✓' : '2.'} <strong>Propose 1–3 initial objectives</strong> — <Link to="/objectives/new">define what successful development looks like</Link>.
+            </li>
+            <li>
+              {hasSessions ? '✓' : '3.'} <strong>Schedule your first session</strong> — <Link to="/sessions/new">put a date in the diary</Link> so you can both prepare.
+            </li>
+          </ol>
+        </section>
+      )}
+
+      {blockedActions.length > 0 && (
+        <section aria-labelledby="h-blocked" className="notice notice-bad" role="alert">
+          <h2 id="h-blocked">⚠ Blocked action{blockedActions.length > 1 ? 's' : ''} needing attention ({blockedActions.length})</h2>
+          <p className="small">
+            Blocked items are shown here for both of you regardless of the action filter below, so requests for support are never missed.
+          </p>
+          <ul className="plain">
+            {blockedActions.map((a) => (
+              <li key={a.id}>
+                <strong>{a.title}</strong> ({labels.role[a.owner_role]})
+                {a.blocked_note ? <> — <em>“{a.blocked_note}”</em></> : null}{' '}
+                · <Link to="/actions">Open actions</Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <section aria-labelledby="h-next" className="panel">
         <h2 id="h-next">Next session</h2>
         {next ? (
           <>
-            <p><Link to={`/sessions/${next.id}`}><strong>{formatInstant(next.scheduled_at)}{next.title ? ` — ${next.title}` : ''}</strong></Link>
-              {next.is_review && <> <Badge status="achieved" label="Progress review" tone="plain" /></>}</p>
-            {(next.location || next.meeting_link) && <p className="muted small">{next.location}{next.location && next.meeting_link ? ' · ' : ''}{next.meeting_link && <a href={next.meeting_link} target="_blank" rel="noopener noreferrer">Meeting link</a>}</p>}
+            <p>
+              <Link to={`/sessions/${next.id}`}>
+                <strong>{formatInstant(next.scheduled_at)}{next.title ? ` — ${next.title}` : ''}</strong>
+              </Link>
+              {next.is_review && <> <Badge status="achieved" label="Progress review" tone="plain" /></>}
+            </p>
+            {(next.location || next.meeting_link) && (
+              <p className="muted small">
+                {next.location}
+                {next.location && next.meeting_link ? ' · ' : ''}
+                {next.meeting_link && <a href={next.meeting_link} target="_blank" rel="noopener noreferrer">Meeting link</a>}
+              </p>
+            )}
             <ul className="plain">
-              {profiles.map((p) => {
+              {partnershipParticipants.map((p) => {
                 const done = preps.some((x) => x.session_id === next.id && x.created_by === p.id);
-                return <li key={p.id}>{done ? '✓' : '○'} {p.id === me.id ? 'You have' : `${p.display_name} has`}{done ? '' : ' not yet'} prepared</li>;
+                return (
+                  <li key={p.id}>
+                    {done ? '✓' : '○'} {p.name === 'You' ? 'You have' : `${p.name} has`}{done ? '' : ' not yet'} prepared
+                  </li>
+                );
               })}
             </ul>
-            <Link to={`/sessions/${next.id}`} className="btn">Open preparation notes</Link>
+            {flaggedForNextSession.length > 0 && (
+              <p className="small">
+                📌 <strong>{flaggedForNextSession.length} progress update{flaggedForNextSession.length > 1 ? 's' : ''}</strong> flagged to discuss in this session.
+              </p>
+            )}
+            <div className="row">
+              <Link to={`/sessions/${next.id}#prep`} className="btn btn-primary">Prepare & view agenda</Link>
+              <Link to={`/sessions/${next.id}`} className="btn">Open session workspace</Link>
+            </div>
           </>
         ) : (
-          <EmptyState title="No session planned" action={<Link to="/sessions/new" className="btn">Plan a session</Link>}>Schedule your next conversation so you can both prepare.</EmptyState>
+          <EmptyState title="No session planned" action={<Link to="/sessions/new" className="btn">Plan a session</Link>}>
+            Schedule your next conversation so you can both prepare.
+          </EmptyState>
         )}
       </section>
 
       <section aria-labelledby="h-act">
         <div className="section-head">
-          <h2 id="h-act">Outstanding actions{overdueCount > 0 && <> <Badge status="overdue" label={`${overdueCount} overdue`} tone="bad" /></>}</h2>
+          <h2 id="h-act">
+            Outstanding actions
+            {overdueCount > 0 && <> <Badge status="overdue" label={`${overdueCount} overdue`} tone="bad" /></>}
+          </h2>
           <div className="seg" role="group" aria-label="Filter actions by owner">
             {([['me', 'Mine'], ['other', otherName], ['both', 'Both']] as const).map(([v, l]) => (
               <button key={v} type="button" className="btn btn-seg" aria-pressed={owner === v} onClick={() => setOwner(v)}>{l}</button>
@@ -97,31 +251,79 @@ export function Overview() {
 
       <section aria-labelledby="h-obj">
         <div className="section-head"><h2 id="h-obj">Active objectives</h2><Link to="/objectives">All objectives</Link></div>
-        {proposed.length > 0 && <p className="notice notice-info small">{proposed.length} proposed objective{proposed.length > 1 ? 's' : ''} awaiting agreement — <Link to="/objectives">review</Link>.</p>}
+        {proposed.length > 0 && (
+          <p className="notice notice-info small">
+            {proposed.length} proposed objective{proposed.length > 1 ? 's' : ''} awaiting agreement — <Link to="/objectives">review</Link>.
+          </p>
+        )}
         {active.length === 0 ? (
-          <EmptyState title="No active objectives" action={<Link to="/objectives/new" className="btn">Propose an objective</Link>}>Agree what development you’re working towards.</EmptyState>
+          <EmptyState title="No active objectives" action={<Link to="/objectives/new" className="btn">Propose an objective</Link>}>
+            Agree what development you’re working towards.
+          </EmptyState>
         ) : (
-          <ul className="cards">{active.map((o) => {
-            const latest = upds.filter((u) => u.objective_id === o.id && !u.archived_at).sort((a, b) => b.occurred_on.localeCompare(a.occurred_on) || b.created_at.localeCompare(a.created_at))[0];
-            return (
-              <li key={o.id} className="card">
-                <Link to={`/objectives/${o.id}`}><strong>{o.title}</strong></Link>
-                {o.review_date && <p className="muted small">Review {formatDay(o.review_date)}</p>}
-                {latest ? <p className="small"><strong>Latest ({formatDay(latest.occurred_on)}):</strong> {latest.content.slice(0, 160)}{latest.content.length > 160 ? '…' : ''}</p> : <p className="muted small">No progress updates yet.</p>}
-              </li>
-            );
-          })}</ul>
+          <ul className="cards">
+            {active.map((o) => {
+              const oUpds = upds.filter((u) => u.objective_id === o.id && !u.archived_at);
+              const latest = [...oUpds].sort((a, b) => b.occurred_on.localeCompare(a.occurred_on) || b.created_at.localeCompare(a.created_at))[0];
+              const oActs = acts.filter((a) => a.objective_id === o.id && !a.archived_at);
+              const oSessIds = sessionObjectives.filter((l) => l.objective_id === o.id).map((l) => l.session_id);
+              const oSessDates = sess.filter((s) => oSessIds.includes(s.id)).map((s) => s.scheduled_at);
+              const activityDates = [
+                ...oUpds.map((u) => u.created_at),
+                ...oActs.map((a) => a.updated_at),
+                ...oSessDates,
+              ];
+              const stalled = isObjectiveStalled(o, activityDates);
+              const reviewDue = Boolean(o.review_date && o.review_date < today);
+              const milestones = o.milestones ?? [];
+              const doneMilestones = milestones.filter((m) => m.done).length;
+
+              return (
+                <li key={o.id} className="card">
+                  <div className="card-top">
+                    <Link to={`/objectives/${o.id}`}><strong>{o.title}</strong></Link>
+                    <span className="badges">
+                      {o.progress_stage && <Badge status="active" label={labels.stage[o.progress_stage]} tone="good" />}
+                      {milestones.length > 0 && <Badge status="planned" label={`${doneMilestones}/${milestones.length} milestones`} tone="plain" />}
+                      {reviewDue && <Badge status="overdue" label="Review due" tone="bad" />}
+                      {stalled && !reviewDue && <Badge status="stalled" label="Needs check-in (>30d)" tone="bad" />}
+                    </span>
+                  </div>
+                  {o.review_date && <p className="muted small">Review {formatDay(o.review_date)}</p>}
+                  {latest ? (
+                    <p className="small">
+                      <strong>Latest ({formatDay(latest.occurred_on)}):</strong> {latest.content.slice(0, 160)}{latest.content.length > 160 ? '…' : ''}
+                    </p>
+                  ) : (
+                    <p className="muted small">No progress updates yet.</p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         )}
       </section>
 
+      {activePartnership && <CharterPanel partnership={activePartnership} />}
+
       <section aria-labelledby="h-feed">
         <h2 id="h-feed">Recent activity</h2>
-        {feed.length === 0 ? <EmptyState title="Nothing yet">Reflections, achievements and completed actions will appear here.</EmptyState> : (
-          <ul className="plain feed">{feed.map((i) => (
-            <li key={i.key}><span className="muted small">{formatInstant(i.at)}</span><br />{i.href ? <Link to={i.href}>{i.text}</Link> : i.text}</li>
-          ))}</ul>
+        {feed.length === 0 ? (
+          <EmptyState title="Nothing yet">Reflections, achievements and completed actions will appear here.</EmptyState>
+        ) : (
+          <ul className="plain feed">
+            {feed.map((i) => (
+              <li key={i.key}>
+                <span className="muted small">{formatInstant(i.at)}</span>
+                <br />
+                {i.href ? <Link to={i.href}>{i.text}</Link> : i.text}
+              </li>
+            ))}
+          </ul>
         )}
       </section>
+
+      {showOnboard && <OnboardMenteeModal onClose={() => setShowOnboard(false)} />}
     </>
   );
 }

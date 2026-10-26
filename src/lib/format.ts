@@ -34,7 +34,7 @@ function partsOf(date: Date) {
   return { y: get('year'), mo: get('month'), d: get('day'), h: get('hour'), mi: get('minute') };
 }
 
-/** ISO instant -> "YYYY-MM-DDTHH:mm" as wall-clock time in Europe/London (for datetime-local inputs). */
+/** ISO instant -> "YYYY-MM-MMTHH:mm" as wall-clock time in Europe/London (for datetime-local inputs). */
 export function isoToLondonLocal(iso: string): string {
   const p = partsOf(new Date(iso));
   const z = (n: number) => String(n).padStart(2, '0');
@@ -62,8 +62,37 @@ export function isOverdue(a: { due_date: string | null; status: string }, today 
   return !!a.due_date && a.due_date < today && a.status !== 'completed' && a.status !== 'cancelled';
 }
 
+/**
+ * Checks whether an active objective has had no activity (update, action, or session)
+ * within the past `days` days (default 30), or has a past review_date (REC-020).
+ */
+export function isObjectiveStalled(
+  objective: { id: string; status: string; updated_at?: string; created_at: string; archived_at?: string | null },
+  activityOrUpdates: Array<string | { objective_id: string | null; occurred_on: string; archived_at?: string | null }>,
+  nowOrToday: number | string = Date.now(),
+  days = 30,
+): boolean {
+  if (objective.status !== 'active' || objective.archived_at) return false;
+  const dateStrings = activityOrUpdates.flatMap((item) => {
+    if (typeof item === 'string') return [item];
+    if (item.archived_at || item.objective_id !== objective.id) return [];
+    return [item.occurred_on];
+  });
+  const all = [objective.created_at, objective.updated_at, ...dateStrings].filter((x): x is string => Boolean(x));
+  const latestMs = Math.max(...all.map((d) => new Date(d).getTime()));
+  const nowMs = typeof nowOrToday === 'number' ? nowOrToday : new Date(nowOrToday).getTime();
+  return nowMs - latestMs > days * 86_400_000;
+}
+
 export const labels = {
   objective: { proposed: 'Proposed', active: 'Active', achieved: 'Achieved', paused: 'Paused', closed: 'Closed' },
+  stage: {
+    starting: 'Starting out',
+    building: 'Building capability',
+    confident: 'Gaining confidence',
+    embedded: 'Embedded in practice',
+  },
+  partnership: { pending: 'Invite pending', active: 'Active', paused: 'Paused', completed: 'Completed' },
   session: { planned: 'Planned', completed: 'Completed', cancelled: 'Cancelled' },
   action: { not_started: 'Not started', in_progress: 'In progress', blocked: 'Blocked', completed: 'Completed', cancelled: 'Cancelled' },
   update: { reflection: 'Reflection', evidence: 'Evidence', feedback: 'Feedback', achievement: 'Achievement' },

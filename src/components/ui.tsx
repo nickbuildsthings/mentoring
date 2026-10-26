@@ -56,7 +56,7 @@ const STATUS_ICON: Record<string, string> = {
   proposed: '◇', active: '●', achieved: '✓', paused: '❚❚', closed: '■',
   planned: '◷', completed: '✓', cancelled: '✕',
   not_started: '○', in_progress: '◐', blocked: '⚠',
-  overdue: '!',
+  overdue: '!', stalled: '◷', pending: '◌',
 };
 
 /** Status is always shown as text plus a symbol, never colour alone. */
@@ -95,7 +95,7 @@ export function LoadError({ error, retry }: { error: unknown; retry?: () => void
 export function useNames() {
   const profiles = useProfiles();
   const map = new Map((profiles.data ?? []).map((p) => [p.id, p.display_name]));
-  return (id: string | null | undefined) => (id ? map.get(id) ?? 'Unknown' : '');
+  return (id: string | null | undefined) => (id ? map.get(id) ?? 'Partner' : '');
 }
 
 export function Attribution({ record }: { record: Stamped }) {
@@ -127,16 +127,52 @@ export function SaveBar<D extends object, R extends Stamped>({ editor, label = '
   );
 }
 
-export function ConflictBanner<D extends object, R extends Stamped>({ editor, fields }: { editor: Editor<D, R>; fields?: { label: string; read: (r: R) => string }[] }) {
+export interface ConflictField<D, R> {
+  label: string;
+  read: (r: R) => string;
+  draftRead?: (d: D) => string;
+}
+
+/**
+ * Displays all fields where the partner's saved version differs from the user's draft,
+ * including fields that were cleared to empty (REC-009).
+ */
+export function ConflictBanner<D extends object, R extends Stamped>({
+  editor,
+  fields,
+}: {
+  editor: Editor<D, R>;
+  fields?: ConflictField<D, R>[];
+}) {
   const name = useNames();
   const c = editor.conflict;
   if (!c) return null;
+
+  const visibleFields = (fields ?? []).filter((f) => {
+    const theirs = f.read(c).trim();
+    if (f.draftRead) {
+      const mine = f.draftRead(editor.draft).trim();
+      return theirs !== mine;
+    }
+    return theirs !== '';
+  });
+
+  const displayList = visibleFields.length > 0 ? visibleFields : (fields ?? []);
+
   return (
     <div className="notice notice-bad" role="alert">
       <p><strong>{name(c.updated_by) || 'Someone'} saved changes to this record</strong> at {formatInstant(c.updated_at)} while you were editing.</p>
-      {fields && (
+      {displayList.length > 0 && (
         <dl className="compare">
-          {fields.filter((f) => f.read(c).trim() !== '').map((f) => (<div key={f.label}><dt>{f.label} (their version)</dt><dd>{f.read(c)}</dd></div>))}
+          {displayList.map((f) => {
+            const theirs = f.read(c).trim();
+            return (
+              <div key={f.label}>
+                <dt>{f.label} (their version)</dt>
+                <dd>{theirs !== '' ? theirs : <span className="muted">(cleared / empty)</span>}</dd>
+              </div>
+            );
+          })}
         </dl>
       )}
       <div className="row">
@@ -173,16 +209,17 @@ export function Modal({ title, onClose, dirty, children }: { title: string; onCl
 export function SharedNotice() {
   return (
     <p className="notice notice-info small">
-      <span aria-hidden="true">👥 </span>Everything written here is visible to both you and your mentoring partner. There are no private notes in this workspace.
+      <span aria-hidden="true">👥 </span>Everything written here is visible to both you and your mentoring partner in this partnership. There are no private notes in this workspace.
     </p>
   );
 }
 
 export function Linkify({ links }: { links: string[] }) {
-  if (!links.length) return null;
+  const valid = (links ?? []).filter(Boolean);
+  if (!valid.length) return null;
   return (
     <ul className="links">
-      {links.map((l) => (<li key={l}><a href={l} target="_blank" rel="noopener noreferrer">{l}</a></li>))}
+      {valid.map((l) => (<li key={l}><a href={l} target="_blank" rel="noopener noreferrer">{l}</a></li>))}
     </ul>
   );
 }

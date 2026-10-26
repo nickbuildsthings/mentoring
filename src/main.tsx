@@ -15,7 +15,7 @@ const queryClient = new QueryClient({
     // An expired or invalid session returns the user to sign-in without showing stale content.
     onError: (e) => { if (isAuthFailure(e)) void supabase.auth.signOut(); },
   }),
-  defaultOptions: { queries: { staleTime: 10_000, retry: 1, refetchOnWindowFocus: true } },
+  defaultOptions: { queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: true } },
 });
 
 createRoot(document.getElementById('root')!).render(

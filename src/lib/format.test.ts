@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatDay, isOverdue, isoToLondonLocal, londonLocalToIso, todayLondon } from './format';
+import { formatDay, isObjectiveStalled, isOverdue, isoToLondonLocal, londonLocalToIso, todayLondon } from './format';
 
 describe('Europe/London handling', () => {
   it('converts BST wall-clock time to UTC', () => {
@@ -32,5 +32,34 @@ describe('overdue', () => {
     expect(isOverdue({ due_date: null, status: 'not_started' }, today)).toBe(false);
     expect(isOverdue({ due_date: '2026-06-01', status: 'completed' }, today)).toBe(false);
     expect(isOverdue({ due_date: '2026-06-01', status: 'cancelled' }, today)).toBe(false);
+  });
+});
+
+describe('stalled objectives', () => {
+  const today = '2026-06-15';
+  it('flags active objectives with no updates in >30 days', () => {
+    expect(
+      isObjectiveStalled(
+        { id: 'o1', status: 'active', created_at: '2026-04-01T10:00:00Z', archived_at: null },
+        [{ objective_id: 'o1', occurred_on: '2026-05-01', archived_at: null }],
+        today,
+      ),
+    ).toBe(true);
+  });
+  it('does not flag active objectives with a recent update or non-active objectives', () => {
+    expect(
+      isObjectiveStalled(
+        { id: 'o1', status: 'active', created_at: '2026-04-01T10:00:00Z', archived_at: null },
+        [{ objective_id: 'o1', occurred_on: '2026-06-01', archived_at: null }],
+        today,
+      ),
+    ).toBe(false);
+    expect(
+      isObjectiveStalled(
+        { id: 'o1', status: 'achieved', created_at: '2026-04-01T10:00:00Z', archived_at: null },
+        [],
+        today,
+      ),
+    ).toBe(false);
   });
 });
